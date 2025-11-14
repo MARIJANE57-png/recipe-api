@@ -5,7 +5,8 @@ const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -103,6 +104,85 @@ app.post('/api/instagram/auto-extract', async (req, res) => {
   }
 });
 
+app.post('/api/image/extract', async (req, res) => {
+  try {
+    const { imageData, userId } = req.body;
+    
+    if (!imageData || !userId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: imageData and userId' 
+      });
+    }
+
+    console.log('Extracting recipe from image...');
+
+    const base64Image = imageData.replace(/^data:image\/\w+;base64,/, '');
+
+    const message = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: base64Image
+            }
+          },
+          {
+            type: 'text',
+            text: 'Extract the recipe from this image. Return ONLY valid JSON in this exact format (no markdown, no explanation): {"title": "Recipe Name", "description": "Brief description", "prepTime": "15 min", "cookTime": "30 min", "servings": "4", "difficulty": "Easy", "ingredients": ["2 cups flour", "1 cup sugar"], "instructions": ["Step 1", "Step 2"], "notes": "Notes", "tags": ["dinner"]}. Extract all visible recipe information. If any field is not present, use an empty string or empty array.'
+          }
+        ]
+      }]
+    });
+
+    let recipeText = message.content[0].text.trim();
+    recipeText = recipeText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    const extractedRecipe = JSON.parse(recipeText);
+
+    const recipe = {
+      id: Date.now().toString(),
+      userId: userId,
+      title: extractedRecipe.title || 'Scanned Recipe',
+      description: extractedRecipe.description || '',
+      prepTime: extractedRecipe.prepTime || '',
+      cookTime: extractedRecipe.cookTime || '',
+      servings: extractedRecipe.servings || '',
+      difficulty: extractedRecipe.difficulty || '',
+      ingredients: extractedRecipe.ingredients || [],
+      instructions: extractedRecipe.instructions || [],
+      notes: extractedRecipe.notes || '',
+      tags: extractedRecipe.tags || [],
+      source: 'Image Scan',
+      sourceUrl: '',
+      thumbnailUrl: imageData,
+      createdAt: new Date(),
+      favorite: false
+    };
+
+    recipes.push(recipe);
+    console.log('Recipe extracted successfully:', recipe.title);
+
+    res.json({ 
+      success: true, 
+      recipe: recipe
+    });
+
+  } catch (error) {
+    console.error('Image extraction error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to extract recipe from image' 
+    });
+  }
+});
+
 app.get('/api/recipes/:userId', (req, res) => {
   const userRecipes = recipes.filter(r => r.userId === req.params.userId);
   res.json({ success: true, recipes: userRecipes });
@@ -159,7 +239,7 @@ async function fetchInstagramData(url) {
 async function extractRecipeSimple(caption, thumbnailUrl, sourceUrl) {
   console.log('Extracting recipe from caption...');
   
-  const prompt = 'Read this social media post and extract the recipe information. Just copy what you see - do not make anything up.\n\nYour response must be ONLY a JSON object with this structure:\n{\n  "title": "the recipe name from the post",\n  "description": "a one-sentence description if available, or empty string",\n  "ingredients": ["ingredient 1", "ingredient 2", "etc - exactly as written in post"],\n  "instructions": ["step 1", "step 2", "etc - exactly as written in post"],\n  "prepTime": "prep time if mentioned, or empty string",\n  "cookTime": "cook time if mentioned, or empty string",\n  "servings": "servings if mentioned, or empty string"\n}\n\nIMPORTANT:\n- Copy ingredients and instructions EXACTLY as they appear\n- If something is not in the post, use empty string or empty array\n- Output ONLY the JSON object, no explanations\n- Do not add markdown formatting\n\nPost:\n' + caption;
+  const prompt = 'Read this social media post and extract the recipe information. Just copy what you see - do not make anything up. Your response must be ONLY a JSON object with this structure: {"title": "the recipe name from the post", "description": "a one-sentence description if available, or empty string", "ingredients": ["ingredient 1", "ingredient 2"], "instructions": ["step 1", "step 2"], "prepTime": "prep time if mentioned, or empty string", "cookTime": "cook time if mentioned, or empty string", "servings": "servings if mentioned, or empty string"}. IMPORTANT: Copy ingredients and instructions EXACTLY as they appear. If something is not in the post, use empty string or empty array. Output ONLY the JSON object, no explanations. Do not add markdown formatting. Post: ' + caption;
 
   try {
     const message = await anthropic.messages.create({
@@ -172,13 +252,10 @@ async function extractRecipeSimple(caption, thumbnailUrl, sourceUrl) {
     });
 
     let text = message.content[0].text.trim();
-    
-    // Remove any markdown formatting
     text = text.replace(/```json/g, '');
     text = text.replace(/```/g, '');
     text = text.trim();
     
-    // Find the JSON object
     const startIndex = text.indexOf('{');
     const endIndex = text.lastIndexOf('}') + 1;
     
@@ -187,12 +264,8 @@ async function extractRecipeSimple(caption, thumbnailUrl, sourceUrl) {
     }
     
     text = text.substring(startIndex, endIndex);
-    
-    console.log('Parsing:', text.substring(0, 100) + '...');
-    
     const recipe = JSON.parse(text);
     
-    // Add metadata
     recipe.sourceUrl = sourceUrl;
     recipe.thumbnailUrl = thumbnailUrl;
     recipe.difficulty = '';
@@ -204,131 +277,12 @@ async function extractRecipeSimple(caption, thumbnailUrl, sourceUrl) {
     
   } catch (error) {
     console.error('Extraction failed:', error.message);
-    throw new Error('Could not extract recipe - please make sure the post contains a recipe with ingredients and instructions');
+    throw new Error('Could not extract recipe');
   }
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Recipe API running on port ' + PORT);
-  console.log('Simple recipe extraction ready!');
-});cat >> server.js << 'ENDOFCODE'
-
-// Image Recipe Extraction Endpoint
-app.post('/api/image/extract', async (req, res) => {
-    try {
-        const { imageData, userId } = req.body;
-        
-        if (!imageData || !userId) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Missing required fields: imageData and userId' 
-            });
-        }
-
-        console.log('📸 Extracting recipe from image...');
-
-        // Remove data URL prefix if present
-        const base64Image = imageData.replace(/^data:image\/\w+;base64,/, '');
-
-        // Call Claude API with vision
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': process.env.ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01'
-            },
-            body: JSON.stringify({
-                model: 'claude-3-5-sonnet-20241022',
-                max_tokens: 2000,
-                messages: [{
-                    role: 'user',
-                    content: [
-                        {
-                            type: 'image',
-                            source: {
-                                type: 'base64',
-                                media_type: 'image/jpeg',
-                                data: base64Image
-                            }
-                        },
-                        {
-                            type: 'text',
-                            text: `Extract the recipe from this image. Return ONLY valid JSON in this exact format (no markdown, no explanation):
-
-{
-  "title": "Recipe Name",
-  "description": "Brief description",
-  "prepTime": "15 min",
-  "cookTime": "30 min",
-  "servings": "4",
-  "difficulty": "Easy",
-  "ingredients": ["2 cups flour", "1 cup sugar", "3 eggs"],
-  "instructions": ["Step 1", "Step 2", "Step 3"],
-  "notes": "Any additional notes or tips",
-  "tags": ["dinner", "italian"]
-}
-
-Extract all visible recipe information. If any field is not present, use an empty string or empty array.`
-                        }
-                    ]
-                }]
-            })
-        });
-
-        const data = await response.json();
-        
-        if (!response.ok) {
-            console.error('❌ Anthropic API error:', data);
-            return res.status(500).json({ 
-                success: false, 
-                error: 'Failed to extract recipe from image' 
-            });
-        }
-
-        // Parse Claude's response
-        let recipeText = data.content[0].text.trim();
-        
-        // Remove markdown code blocks if present
-        recipeText = recipeText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        
-        const extractedRecipe = JSON.parse(recipeText);
-
-        // Create recipe object
-        const recipe = {
-            id: Date.now().toString(),
-            userId: userId,
-            title: extractedRecipe.title || 'Scanned Recipe',
-            description: extractedRecipe.description || '',
-            prepTime: extractedRecipe.prepTime || '',
-            cookTime: extractedRecipe.cookTime || '',
-            servings: extractedRecipe.servings || '',
-            difficulty: extractedRecipe.difficulty || '',
-            ingredients: extractedRecipe.ingredients || [],
-            instructions: extractedRecipe.instructions || [],
-            notes: extractedRecipe.notes || '',
-            tags: extractedRecipe.tags || [],
-            source: 'Image Scan',
-            sourceUrl: '',
-            thumbnailUrl: imageData, // Store the original image
-            createdAt: new Date(),
-            favorite: false
-        };
-
-        console.log('✅ Recipe extracted successfully:', recipe.title);
-
-        res.json({ 
-            success: true, 
-            recipe: recipe
-        });
-
-    } catch (error) {
-        console.error('❌ Image extraction error:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message || 'Failed to extract recipe from image' 
-        });
-    }
+  console.log('Image scanning ready!');
 });
-ENDOFCODE
