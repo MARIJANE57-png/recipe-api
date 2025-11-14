@@ -212,4 +212,123 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Recipe API running on port ' + PORT);
   console.log('Simple recipe extraction ready!');
+});cat >> server.js << 'ENDOFCODE'
+
+// Image Recipe Extraction Endpoint
+app.post('/api/image/extract', async (req, res) => {
+    try {
+        const { imageData, userId } = req.body;
+        
+        if (!imageData || !userId) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing required fields: imageData and userId' 
+            });
+        }
+
+        console.log('📸 Extracting recipe from image...');
+
+        // Remove data URL prefix if present
+        const base64Image = imageData.replace(/^data:image\/\w+;base64,/, '');
+
+        // Call Claude API with vision
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+                model: 'claude-3-5-sonnet-20241022',
+                max_tokens: 2000,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: 'image/jpeg',
+                                data: base64Image
+                            }
+                        },
+                        {
+                            type: 'text',
+                            text: `Extract the recipe from this image. Return ONLY valid JSON in this exact format (no markdown, no explanation):
+
+{
+  "title": "Recipe Name",
+  "description": "Brief description",
+  "prepTime": "15 min",
+  "cookTime": "30 min",
+  "servings": "4",
+  "difficulty": "Easy",
+  "ingredients": ["2 cups flour", "1 cup sugar", "3 eggs"],
+  "instructions": ["Step 1", "Step 2", "Step 3"],
+  "notes": "Any additional notes or tips",
+  "tags": ["dinner", "italian"]
+}
+
+Extract all visible recipe information. If any field is not present, use an empty string or empty array.`
+                        }
+                    ]
+                }]
+            })
+        });
+
+        const data = await response.json();
+        
+        if (!response.ok) {
+            console.error('❌ Anthropic API error:', data);
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Failed to extract recipe from image' 
+            });
+        }
+
+        // Parse Claude's response
+        let recipeText = data.content[0].text.trim();
+        
+        // Remove markdown code blocks if present
+        recipeText = recipeText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+        const extractedRecipe = JSON.parse(recipeText);
+
+        // Create recipe object
+        const recipe = {
+            id: Date.now().toString(),
+            userId: userId,
+            title: extractedRecipe.title || 'Scanned Recipe',
+            description: extractedRecipe.description || '',
+            prepTime: extractedRecipe.prepTime || '',
+            cookTime: extractedRecipe.cookTime || '',
+            servings: extractedRecipe.servings || '',
+            difficulty: extractedRecipe.difficulty || '',
+            ingredients: extractedRecipe.ingredients || [],
+            instructions: extractedRecipe.instructions || [],
+            notes: extractedRecipe.notes || '',
+            tags: extractedRecipe.tags || [],
+            source: 'Image Scan',
+            sourceUrl: '',
+            thumbnailUrl: imageData, // Store the original image
+            createdAt: new Date(),
+            favorite: false
+        };
+
+        console.log('✅ Recipe extracted successfully:', recipe.title);
+
+        res.json({ 
+            success: true, 
+            recipe: recipe
+        });
+
+    } catch (error) {
+        console.error('❌ Image extraction error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message || 'Failed to extract recipe from image' 
+        });
+    }
 });
+ENDOFCODE
