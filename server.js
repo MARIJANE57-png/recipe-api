@@ -129,7 +129,7 @@ app.post('/api/image/extract', async (req, res) => {
             type: 'image',
             source: {
               type: 'base64',
-              media_type: 'image/jpeg',
+              media_type: imageData.includes('image/png') ? 'image/png' : imageData.includes('image/webp') ? 'image/webp' : imageData.includes('image/gif') ? 'image/gif' : 'image/jpeg',
               data: base64Image
             }
           },
