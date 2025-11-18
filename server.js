@@ -22,7 +22,7 @@ const anthropic = new Anthropic({
 
 let recipes = [];
 
-app.post('/api/tiktok/auto-extract', async (req, res) => {
+app.post('/tiktok/auto-extract', async (req, res) => {
   try {
     const { tiktokUrl, userId } = req.body;
     console.log('Starting TikTok auto-extract for:', tiktokUrl);
@@ -63,7 +63,7 @@ app.post('/api/tiktok/auto-extract', async (req, res) => {
   }
 });
 
-app.post('/api/instagram/auto-extract', async (req, res) => {
+app.post('/instagram/auto-extract', async (req, res) => {
   try {
     const { instagramUrl, userId } = req.body;
     console.log('Starting Instagram auto-extract for:', instagramUrl);
@@ -104,7 +104,7 @@ app.post('/api/instagram/auto-extract', async (req, res) => {
   }
 });
 
-app.post('/api/image/extract', async (req, res) => {
+app.post('/image/extract', async (req, res) => {
   try {
     const { imageData, userId } = req.body;
     
@@ -183,7 +183,7 @@ app.post('/api/image/extract', async (req, res) => {
   }
 });
 
-app.get('/api/recipes/:userId', (req, res) => {
+app.get('/recipes/:userId', (req, res) => {
   const userRecipes = recipes.filter(r => r.userId === req.params.userId);
   res.json({ success: true, recipes: userRecipes });
 });
