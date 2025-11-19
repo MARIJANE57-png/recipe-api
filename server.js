@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -21,6 +22,145 @@ const anthropic = new Anthropic({
 });
 
 let recipes = [];
+
+// Website URL Extraction - NEW!
+app.post('/website/extract', async (req, res) => {
+  try {
+    const { websiteUrl, userId } = req.body;
+    console.log('Extracting recipe from website:', websiteUrl);
+
+    // Fetch the webpage
+    const response = await axios.get(websiteUrl, {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    const html = response.data;
+    const $ = cheerio.load(html);
+    
+    // Try to find JSON-LD structured data (most recipe sites use this)
+    let recipeData = null;
+    $('script[type="application/ld+json"]').each((i, elem) => {
+      try {
+        const jsonData = JSON.parse($(elem).html());
+        if (jsonData['@type'] === 'Recipe' || 
+            (Array.isArray(jsonData['@graph']) && 
+             jsonData['@graph'].find(item => item['@type'] === 'Recipe'))) {
+          recipeData = Array.isArray(jsonData['@graph']) 
+            ? jsonData['@graph'].find(item => item['@type'] === 'Recipe')
+            : jsonData;
+        }
+      } catch (e) {
+        // Skip invalid JSON
+      }
+    });
+
+    let recipe;
+    
+    if (recipeData) {
+      // We found structured data! Parse it directly
+      recipe = parseStructuredRecipe(recipeData, websiteUrl);
+      console.log('Found structured recipe data!');
+    } else {
+      // No structured data, use Claude to extract from HTML
+      console.log('No structured data, using Claude to extract...');
+      
+      // Get clean text content
+      const bodyText = $('body').text().replace(/\s+/g, ' ').trim().substring(0, 10000);
+      
+      const message = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: `Extract the recipe from this webpage text. Return ONLY valid JSON (no markdown, no explanation): {"title": "Recipe Name", "description": "Brief description", "prepTime": "15 min", "cookTime": "30 min", "servings": "4", "ingredients": ["2 cups flour"], "instructions": ["Step 1"], "notes": ""}. 
+
+Webpage text: ${bodyText}`
+        }]
+      });
+
+      let recipeText = message.content[0].text.trim();
+      recipeText = recipeText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      recipe = JSON.parse(recipeText);
+      recipe.sourceUrl = websiteUrl;
+    }
+
+    recipe.id = Date.now().toString();
+    recipe.userId = userId;
+    recipe.createdAt = new Date();
+    recipe.source = 'Website';
+    recipe.favorite = false;
+    
+    recipes.push(recipe);
+
+    res.json({
+      success: true,
+      recipe: recipe,
+      message: 'Recipe extracted from website!'
+    });
+
+  } catch (error) {
+    console.error('Website extraction error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to extract recipe from website'
+    });
+  }
+});
+
+// Helper function to parse structured recipe data
+function parseStructuredRecipe(data, sourceUrl) {
+  return {
+    title: data.name || 'Untitled Recipe',
+    description: data.description || '',
+    prepTime: formatTime(data.prepTime),
+    cookTime: formatTime(data.cookTime),
+    servings: data.recipeYield ? String(data.recipeYield) : '',
+    ingredients: Array.isArray(data.recipeIngredient) 
+      ? data.recipeIngredient 
+      : (typeof data.recipeIngredient === 'string' 
+        ? [data.recipeIngredient] 
+        : []),
+    instructions: parseInstructions(data.recipeInstructions),
+    notes: data.notes || '',
+    tags: data.recipeCategory ? [data.recipeCategory] : [],
+    sourceUrl: sourceUrl,
+    thumbnailUrl: data.image?.url || data.image || '',
+    difficulty: '',
+    totalTime: formatTime(data.totalTime)
+  };
+}
+
+function formatTime(duration) {
+  if (!duration) return '';
+  // Convert ISO 8601 duration (PT30M) to readable format (30 min)
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!match) return duration;
+  const hours = match[1] ? `${match[1]}h ` : '';
+  const minutes = match[2] ? `${match[2]}min` : '';
+  return hours + minutes;
+}
+
+function parseInstructions(instructions) {
+  if (!instructions) return [];
+  
+  if (Array.isArray(instructions)) {
+    return instructions.map(step => {
+      if (typeof step === 'string') return step;
+      if (step.text) return step.text;
+      if (step['@type'] === 'HowToStep' && step.text) return step.text;
+      return JSON.stringify(step);
+    });
+  }
+  
+  if (typeof instructions === 'string') {
+    return instructions.split('\n').filter(s => s.trim());
+  }
+  
+  return [];
+}
 
 app.post('/tiktok/auto-extract', async (req, res) => {
   try {
@@ -284,5 +424,5 @@ async function extractRecipeSimple(caption, thumbnailUrl, sourceUrl) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Recipe API running on port ' + PORT);
-  console.log('Image scanning ready!');
+  console.log('All extraction methods ready!');
 });
