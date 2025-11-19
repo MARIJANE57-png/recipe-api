@@ -1,21 +1,20 @@
 {
   "name": "recipe-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Recipe extraction API for Recipe Society",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.68.0",
-    "axios": "^1.13.2",
+    "@anthropic-ai/sdk": "^0.32.1",
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "mongodb": "^7.0.0"
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
